@@ -1,12 +1,10 @@
-import mongoose, { Schema, Document, Model, Query } from "mongoose";
+import mongoose, { Schema, Document, Model } from "mongoose";
 import History, {
   HistoryDocument,
   HistoryModel,
   historySchema,
 } from "./model.js";
-
 import * as jsondiffpatch from "jsondiffpatch";
-import { pick, assign } from "lodash"; // Assuming lodash library is used for pick and assign functions
 const jsondiffpatchInstance = jsondiffpatch.create({
   // used to match objects when diffing arrays, by default only === operator is used
   objectHash: function (obj: any) {
@@ -15,64 +13,19 @@ const jsondiffpatchInstance = jsondiffpatch.create({
   },
 });
 
-const saveDiffHistory = async (queryObject: any, currentObject: any) => {
-  const queryUpdate: any = queryObject.getUpdate();
-  const schemaOptions: any = queryObject.model.schema.options || {};
-
-  let keysToBeModified: string[] = [];
-  let mongoUpdateOperations: string[] = [];
-  let plainKeys: string[] = [];
-
-  for (const key in queryUpdate) {
-    const value = queryUpdate[key];
-    if (key.startsWith("$") && typeof value === "object") {
-      const innerKeys = Object.keys(value);
-      keysToBeModified = keysToBeModified.concat(innerKeys);
-      if (key !== "$setOnInsert") {
-        mongoUpdateOperations = mongoUpdateOperations.concat(key);
-      }
-    } else {
-      keysToBeModified.push(key);
-      plainKeys.push(key);
-    }
-  }
-  let updatedObject = assign(
-    { ...currentObject },
-    pick(queryUpdate, mongoUpdateOperations),
-    pick(queryUpdate, plainKeys)
-  );
-
-  let { strict } = queryObject.options || {};
-  // strict in Query options can override schema option
-  strict = strict !== undefined ? strict : schemaOptions.strict;
-
-  if (strict === true) {
-    const validPaths = Object.keys(queryObject.model.schema.paths);
-    updatedObject = pick(updatedObject, validPaths);
-  }
-
-  return await saveDiffObject(currentObject, updatedObject);
-};
-
-const saveDiffs = async (queryObject: any) => {
-  try {
-    const doc = await queryObject.model.findOne(queryObject._conditions);
-    await saveDiffHistory(queryObject, doc.toObject({ depopulate: true }));
-  } catch (error) {
-    console.error(error);
-  }
-};
-
-async function saveDiffObject(currentObject: any, updated: any) {
+export async function saveDiffObject(currentObject: any, updated: any) {
   try {
     let diff = jsondiffpatchInstance.diff(
       JSON.parse(JSON.stringify(currentObject)),
       JSON.parse(JSON.stringify(updated))
     );
+    if (!diff || Object.keys(diff).length == 0) {
+      return;
+    }
 
     const collectionId = currentObject._id;
     const collectionName = currentObject.constructor.modelName;
-    const affectedColumns = diff ? Object.keys(diff) : [];
+    const affectedColumns = Object.keys(diff);
     const lastHistory = await History.model
       .findOne({ collectionId, collectionName })
       .sort("-version");
@@ -113,21 +66,40 @@ function lastModifiedPlugin<T extends Document>(schema: Schema<T>): void {
     }
   });
 
-  schema.pre("findOneAndUpdate", async function (this, next) {
+  schema.pre("findOneAndUpdate", async function (this: any, next) {
     try {
-      await saveDiffs(this);
+      const doc = await this.model.findOne(this._conditions);
+      this.old = doc.toObject({ depopulate: true });
+      next();
+    } catch (error: any) {
+      next(error);
+    }
+  });
+  schema.post("findOneAndUpdate", async function (this: any) {
+    try {
+      const updated = await this.model.findOne(this._conditions);
+      await saveDiffObject(this.old, updated.toObject({ depopulate: true }));
+    } catch (error: any) {
+      console.error(error);
+    }
+  });
+
+  schema.pre("updateOne", async function (this: any, next) {
+    try {
+      const doc = await this.model.findOne(this._conditions);
+      this.old = doc.toObject({ depopulate: true });
       next();
     } catch (error: any) {
       next(error);
     }
   });
 
-  schema.pre("updateOne", async function (this, next) {
+  schema.post("updateOne", async function (this: any) {
     try {
-      await saveDiffs(this);
-      next();
+      const updated = await this.model.findOne(this._conditions);
+      await saveDiffObject(this.old, updated);
     } catch (error: any) {
-      next(error);
+      console.error(error);
     }
   });
 }
