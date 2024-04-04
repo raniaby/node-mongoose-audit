@@ -1,4 +1,4 @@
-import mongoose, { Schema, Document, Model } from "mongoose";
+import mongoose, { Schema, Document } from "mongoose";
 import History, {
   HistoryDocument,
   HistoryModel,
@@ -9,7 +9,7 @@ const jsondiffpatchInstance = jsondiffpatch.create({
   // used to match objects when diffing arrays, by default only === operator is used
   objectHash: function (obj: any) {
     // this function is used only to when objects are not equal by ref
-    return obj._id || obj.id;
+    return JSON.stringify(obj)
   },
 });
 
@@ -54,15 +54,33 @@ export async function initConnection(uri: string) {
 }
 
 function lastModifiedPlugin<T extends Document>(schema: Schema<T>): void {
-  schema.pre("save", async function (this: T, next) {
-    if (this.isNew) return next();
+  schema.pre("updateMany", async function (this: any, next) {
     try {
-      const ModelClass = this.constructor as Model<T>;
-      const original = await ModelClass.findOne({ _id: this._id });
-      await saveDiffObject(original, this.toObject({ depopulate: true }));
+      const oldValues = await this.model.find(this._conditions);
+      this.oldDocs = oldValues;
       next();
-    } catch (err: any) {
-      next(err);
+    } catch (error: any) {
+      next(error);
+    }
+  });
+
+  schema.post("updateMany", async function (this: any) {
+    try {
+      const { deleted, deletedAt, ...rest } = this._conditions;
+      const updatedDocs = await this.model.findWithDeleted(rest);
+      for (const updatedDoc of updatedDocs) {
+        const oldCorrespondingDoc = this.oldDocs.find(
+          (el: any) => el._id.toString() === updatedDoc._id.toString()
+        );
+        if (oldCorrespondingDoc) {
+          await saveDiffObject(
+            oldCorrespondingDoc.toObject({ depopulate: true }),
+            updatedDoc.toObject({ depopulate: true })
+          );
+        }
+      }
+    } catch (error) {
+      console.error(error);
     }
   });
 
@@ -75,6 +93,7 @@ function lastModifiedPlugin<T extends Document>(schema: Schema<T>): void {
       next(error);
     }
   });
+
   schema.post("findOneAndUpdate", async function (this: any) {
     try {
       const updated = await this.model.findOne(this._conditions);
@@ -97,7 +116,7 @@ function lastModifiedPlugin<T extends Document>(schema: Schema<T>): void {
   schema.post("updateOne", async function (this: any) {
     try {
       const updated = await this.model.findOne(this._conditions);
-      await saveDiffObject(this.old, updated);
+      await saveDiffObject(this.old, updated.toObject({ depopulate: true }));
     } catch (error: any) {
       console.error(error);
     }
