@@ -7,13 +7,13 @@ This package provides functionality for auditing database changes in mongoose.
 To install the package, run the following command:
 
 ```bash
-npm install 'node-mongoose-audit'
+npm install node-mongoose-audit
 ```
 
 ## Setting up Database Connection
 
 ```js
-import { initConnection } from node-mongoose-audit; 
+import { initConnection } from 'node-mongoose-audit'; 
 ```
 Provide Database Uri
 ```js
